@@ -72,7 +72,7 @@ Get-Service -Name "*cbdhsvc*" -ErrorAction SilentlyContinue | Stop-Service -Forc
 # ============================================
 # 1. СБОР СИСТЕМНОЙ ИНФОРМАЦИИ
 # ============================================
-Write-Host "`n[1/6] COLLECTING SYSTEM INFORMATION..." -ForegroundColor Magenta
+Write-Host "`n[1/7] COLLECTING SYSTEM INFORMATION..." -ForegroundColor Magenta
 $os = Get-CimInstance Win32_OperatingSystem
 $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
 $disk = Get-Disk | Select-Object -First 1
@@ -96,7 +96,7 @@ Start-Sleep -Seconds 2
 # ============================================
 # 2. BAM ПАРСЕР
 # ============================================
-Write-Host "`n[2/6] RUNNING BAM ANALYZER (Background Activity Moderator)..." -ForegroundColor Magenta
+Write-Host "`n[2/7] RUNNING BAM ANALYZER (Background Activity Moderator)..." -ForegroundColor Magenta
 
 function Get-Signature {
     param ([string[]]$FilePath)
@@ -190,7 +190,7 @@ Start-Sleep -Seconds 2
 # ============================================
 # 3. СКАЧИВАНИЕ И ЗАПУСК InjGen
 # ============================================
-Write-Host "`n[3/6] DOWNLOADING AND RUNNING InjGen.exe..." -ForegroundColor Magenta
+Write-Host "`n[3/7] DOWNLOADING AND RUNNING InjGen.exe..." -ForegroundColor Magenta
 $injGenPath = "InjGen.exe"
 if (-not (Test-Path $injGenPath)) {
     try {
@@ -221,7 +221,7 @@ Start-Sleep -Seconds 2
 # ============================================
 # 4. СКАЧИВАНИЕ И ЗАПУСК USBDriveLog
 # ============================================
-Write-Host "`n[4/6] DOWNLOADING AND RUNNING USBDriveLog.exe..." -ForegroundColor Magenta
+Write-Host "`n[4/7] DOWNLOADING AND RUNNING USBDriveLog.exe..." -ForegroundColor Magenta
 $usbDriveLogPath = "USBDriveLog.exe"
 if (-not (Test-Path $usbDriveLogPath)) {
     try {
@@ -252,7 +252,7 @@ Start-Sleep -Seconds 2
 # ============================================
 # 5. СКАЧИВАНИЕ И ЗАПУСК JournalTrace
 # ============================================
-Write-Host "`n[5/6] DOWNLOADING AND RUNNING JournalTrace.exe..." -ForegroundColor Magenta
+Write-Host "`n[5/7] DOWNLOADING AND RUNNING JournalTrace.exe..." -ForegroundColor Magenta
 $journalTracePath = "JournalTrace.exe"
 if (-not (Test-Path $journalTracePath)) {
     try {
@@ -281,9 +281,41 @@ else {
 Start-Sleep -Seconds 2
 
 # ============================================
-# 6. СКАЧИВАНИЕ И ЗАПУСК Everything + конфиг
+# 6. СКАЧИВАНИЕ И ЗАПУСК ShellBag Analyzer
 # ============================================
-Write-Host "`n[6/6] DOWNLOADING AND RUNNING Everything.exe..." -ForegroundColor Magenta
+Write-Host "`n[6/7] DOWNLOADING AND RUNNING ShellBag Analyzer & Cleaner..." -ForegroundColor Magenta
+
+$shellbagExe = "ShellBagAnalyzerCleaner.exe"
+if (-not (Test-Path $shellbagExe)) {
+    try {
+        Invoke-WebRequest -Uri "https://privazer.com/ru/shellbag_analyzer_cleaner.exe" -OutFile $shellbagExe -UseBasicParsing
+        Write-Host "[+] ShellBag Analyzer successfully downloaded" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "[!] Error downloading ShellBag Analyzer: $_" -ForegroundColor Red
+    }
+}
+
+if (Test-Path $shellbagExe) {
+    Write-Host "[*] Running ShellBag Analyzer & Cleaner..." -ForegroundColor Magenta
+    try {
+        Start-Process -FilePath ".\$shellbagExe" -WindowStyle Normal
+        Write-Host "[+] ShellBag Analyzer started" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "[!] Error running ShellBag Analyzer: $_" -ForegroundColor Red
+    }
+}
+else {
+    Write-Host "[!] ShellBag Analyzer not found, skipping..." -ForegroundColor Red
+}
+
+Start-Sleep -Seconds 2
+
+# ============================================
+# 7. СКАЧИВАНИЕ И ЗАПУСК Everything + конфиг
+# ============================================
+Write-Host "`n[7/7] DOWNLOADING AND RUNNING Everything.exe..." -ForegroundColor Magenta
 
 # Скачивание конфига
 $everythingIniPath = "Everything-1.5a.ini"
