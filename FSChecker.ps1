@@ -111,6 +111,9 @@ $SystemCPUSerial = (Get-CimInstance Win32_Processor | Select-Object -First 1).Pr
 $SystemDiskSerial = (Get-Disk | Select-Object -First 1).SerialNumber.trim()
 $SystemBootTime = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss')
 $SystemHWID = $SystemCPUSerial + $SystemDiskSerial
+$SystemManufacturer = (Get-CimInstance Win32_ComputerSystem).Manufacturer.Trim()
+$SystemModel = (Get-CimInstance Win32_ComputerSystem).Model.Trim()
+$SystemBIOS = (Get-CimInstance Win32_BIOS).SMBIOSBIOSVersion.Trim()
 
 Write-Host "`n[1/6] COLLECTING SYSTEM INFORMATION..." -ForegroundColor White
 Write-Host "    Username: $SystemUser" -ForegroundColor White
@@ -120,20 +123,20 @@ Write-Host "    UUID: $SystemUID" -ForegroundColor White
 Write-Host "    HWID: $SystemHWID" -ForegroundColor White
 Write-Host "    Boot Time: $SystemBootTime" -ForegroundColor White
 Write-Host "    Current Time: $(Get-Date -Format 'dd.MM.yyyy HH:mm:ss')" -ForegroundColor White
+Write-Host "    System Manufacturer: $SystemManufacturer" -ForegroundColor White
+Write-Host "    System Model: $SystemModel" -ForegroundColor White
+Write-Host "    BIOS Version: $SystemBIOS" -ForegroundColor White
 
 # --- SERVICE STATUS ---
 Write-Host "`n[*] SERVICE STATUS :" -ForegroundColor White
 $ServicesToCheck = @(
-    @{ Name = "SysMain"; Display = "SysMain" },
-    @{ Name = "DiagTrack"; Display = "DiagTrack" },
-    @{ Name = "PcaSvc"; Display = "PcaSvc" },
-    @{ Name = "Appinfo"; Display = "Appinfo" },
-    @{ Name = "Bam"; Display = "Bam" },
-    @{ Name = "Power"; Display = "Power" },
-    @{ Name = "WSearch"; Display = "WSearch" },
-    @{ Name = "DPS"; Display = "DPS" },
+    @{ Name = "Appinfo";  Display = "Appinfo"  },
     @{ Name = "EventLog"; Display = "EventLog" },
-    @{ Name = "CDPSvc"; Display = "CDPSvc" }
+    @{ Name = "SysMain";  Display = "SysMain"  },
+    @{ Name = "PcaSvc";   Display = "PcaSvc"   },
+    @{ Name = "DiagTrack"; Display = "DiagTrack" },
+    @{ Name = "DPS";      Display = "DPS"      },
+    @{ Name = "Bam";      Display = "Bam"      }
 )
 
 foreach ($Svc in $ServicesToCheck) {
@@ -204,10 +207,13 @@ if ($Users) {
     
     foreach ($e in $FinalBam) {
         $statusColor = if ($e.Sig -eq "Invalid Signature (NotSigned)") { $RED } else { $ORG }
+        $appTrunc  = if ($e.App.Length -gt 24)  { $e.App.Substring(0,21)  + "..." } else { $e.App }
+        $sigTrunc  = if ($e.Sig.Length -gt 29)  { $e.Sig.Substring(0,26)  + "..." } else { $e.Sig }
+        $pathShort = if ($e.Path.Length -gt 55) { "..." + $e.Path.Substring($e.Path.Length - 52) } else { $e.Path }
         Write-Host -NoNewline ($statusColor + $e.Time.PadRight(20) + $R)
-        Write-Host -NoNewline ($W + $e.App.PadRight(25) + $R)
-        Write-Host -NoNewline ($statusColor + $e.Sig.PadRight(30) + $R)
-        Write-Host ($W + $e.Path + $R)
+        Write-Host -NoNewline ($W + $appTrunc.PadRight(25) + $R)
+        Write-Host -NoNewline ($statusColor + $sigTrunc.PadRight(30) + $R)
+        Write-Host ($W + $pathShort + $R)
     }
 }
 
@@ -240,10 +246,13 @@ foreach ($Drive in $Drives) {
                 $sigStatus = Get-Signature -FilePath $origPath
                 $statusColor = if ($sigStatus -eq "Valid Signature") { $G } else { $RED }
 
+                $fileNameTrunc = if ($fileName.Length -gt 24) { $fileName.Substring(0,21) + "..." } else { $fileName }
+                $sigTrunc      = if ($sigStatus.Length -gt 19) { $sigStatus.Substring(0,16) + "..." } else { $sigStatus }
+                $pathShort     = if ($origPath.Length -gt 55) { "..." + $origPath.Substring($origPath.Length - 52) } else { $origPath }
                 Write-Host -NoNewline ($W + $TimeStr.PadRight(20) + $R)
-                Write-Host -NoNewline ($W + $fileName.PadLeft(1).Substring(0, [Math]::Min($fileName.Length, 24)).PadRight(25) + $R)
-                Write-Host -NoNewline ($statusColor + $sigStatus.PadRight(20) + $R)
-                Write-Host ($W + $origPath + $R)
+                Write-Host -NoNewline ($W + $fileNameTrunc.PadRight(25) + $R)
+                Write-Host -NoNewline ($statusColor + $sigTrunc.PadRight(20) + $R)
+                Write-Host ($W + $pathShort + $R)
             } catch { continue }
         }
     }
@@ -281,90 +290,26 @@ try {
 # --- [5/6] JVMTI DETECTOR ---
 Write-Host "`n[5/6] JVMTI DETECTOR..." -ForegroundColor White
 
-$PATTERN_A = [uint32]524294
-$PATTERN_B = [uint32]4242546329
-
-function Find-DwordInBytes {
-    param([byte[]]$Buffer, [uint32]$Target, [int]$BaseOffset)
-    $i = 0
-    while ($i + 4 -le $Buffer.Length) {
-        $val = [System.BitConverter]::ToUInt32($Buffer, $i)
-        if ($val -eq $Target) { return $BaseOffset + $i }
-        $i += 4
-    }
-    return $null
-}
-
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public class WinMem {
-    [DllImport("kernel32.dll")]
-    public static extern IntPtr OpenProcess(uint dwAccess, bool bInherit, int dwPid);
-    [DllImport("kernel32.dll")]
-    public static extern bool ReadProcessMemory(IntPtr hProcess, IntPtr lpBase, byte[] lpBuffer, int nSize, out int lpRead);
-    [DllImport("kernel32.dll")]
-    public static extern bool CloseHandle(IntPtr hObject);
-}
-'@ -ErrorAction SilentlyContinue
-
-function Scan-JvmDll {
-    param([System.Diagnostics.Process]$Process)
-    $jvmModule = $null
-    try { $jvmModule = $Process.Modules | Where-Object { $_.ModuleName -ieq "jvm.dll" } | Select-Object -First 1 } catch {}
-    if (-not $jvmModule) { return $null }
-
-    $baseAddr   = $jvmModule.BaseAddress.ToInt64()
-    $moduleSize = $jvmModule.ModuleMemorySize
-    $hProc = [WinMem]::OpenProcess(0x0410, $false, $Process.Id)
-    if ($hProc -eq [IntPtr]::Zero) { return $null }
-
+$jvmtiExe = Join-Path $workPath "jvmti_standalone.exe"
+if (-not (Test-Path $jvmtiExe)) {
     try {
-        $chunkSize = 256 * 1024
-        $hitA = $null; $hitB = $null; $offset = 0
-        while ($offset -lt $moduleSize) {
-            $toRead = [Math]::Min($chunkSize, $moduleSize - $offset)
-            $buf    = New-Object byte[] $toRead
-            $read   = 0
-            $addr   = [IntPtr]($baseAddr + $offset)
-            $ok     = [WinMem]::ReadProcessMemory($hProc, $addr, $buf, $toRead, [ref]$read)
-            if ($ok -and $read -gt 0) {
-                $slice = if ($read -lt $buf.Length) { $buf[0..($read-1)] } else { $buf }
-                if ($null -eq $hitA) { $hitA = Find-DwordInBytes -Buffer $slice -Target $PATTERN_A -BaseOffset $offset }
-                if ($null -eq $hitB) { $hitB = Find-DwordInBytes -Buffer $slice -Target $PATTERN_B -BaseOffset $offset }
-            }
-            $offset += $chunkSize
-        }
-        return [PSCustomObject]@{ Pid = $Process.Id; JvmPath = $jvmModule.FileName; HitA = $hitA; HitB = $hitB }
-    } finally {
-        [WinMem]::CloseHandle($hProc) | Out-Null
+        Invoke-WebRequest -Uri "https://github.com/koras5880-alt/JVMTI-Detector/raw/refs/heads/main/jvmti_standalone.exe" -OutFile $jvmtiExe -UseBasicParsing -ErrorAction Stop
+    } catch {
+        Write-Host ($RED + "[-] Failed to download JVMTI Detector" + $R)
     }
 }
 
-$javawProcs = Get-Process -Name "javaw" -ErrorAction SilentlyContinue
-
-if (-not $javawProcs) {
-    Write-Host ($W + "  [+] Minecraft not found" + $R)
+if (Test-Path $jvmtiExe) {
+    Unblock-File -Path $jvmtiExe
+    try {
+        $proc = Start-Process -FilePath $jvmtiExe -WorkingDirectory $workPath -Wait -PassThru -ErrorAction Stop
+    } catch {
+        Write-Host ($RED + "[-] Error running JVMTI Detector: $($_.Exception.Message)" + $R)
+    }
 } else {
-    $jvmtiFound   = $false
-    $jvmtiPartial = $false
-    foreach ($proc in @($javawProcs)) {
-        $result = Scan-JvmDll -Process $proc
-        if (-not $result) { continue }
-        $bothHit = ($null -ne $result.HitA) -and ($null -ne $result.HitB)
-        $anyHit  = ($null -ne $result.HitA) -or  ($null -ne $result.HitB)
-        if ($bothHit) { $jvmtiFound = $true; break }
-        if ($anyHit)  { $jvmtiPartial = $true }
-    }
-
-    if ($jvmtiFound) {
-        Write-Host ($RED + "  [!] JVMTI inject detect" + $R)
-    } elseif ($jvmtiPartial) {
-        Write-Host ($ORG + "  [?] JVMTI inject possible detect" + $R)
-    } else {
-        Write-Host ($G + "  [+] JVMTI inject not detected" + $R)
-    }
+    Write-Host ($RED + "[-] jvmti_standalone.exe not found" + $R)
 }
+
 
 # --- [6/6] OPENING UTILS ---
 Write-Host "`n[6/6] OPENING UTILS..." -ForegroundColor White
